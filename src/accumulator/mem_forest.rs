@@ -1093,4 +1093,259 @@ mod test {
         assert!(deserialized.get_roots()[0].get_data().is_empty());
         assert_eq!(deserialized.leaves, 16);
     }
+
+    #[test]
+    fn comprehensive_add_prove_delete_verify_regression_memforest() {
+        println!("=== Starting MemForest Regression Test ===");
+
+        let mut forest = MemForest::<BitcoinNodeHash>::new();
+
+        // Step 1: Add 4 leaves to create a small but complex tree
+        let leaves = vec![
+            hash_from_u8(10),
+            hash_from_u8(20),
+            hash_from_u8(30),
+            hash_from_u8(40),
+        ];
+
+        println!("Step 1: Adding {} leaves", leaves.len());
+        forest.modify(&leaves, &[]).expect("Failed to add leaves");
+
+        println!("After adding leaves:");
+        println!("  Number of leaves: {}", forest.leaves);
+        println!("  Number of roots: {}", forest.get_roots().len());
+        for (i, root) in forest.get_roots().iter().enumerate() {
+            println!("    Root {}: {:?}", i, root.get_data());
+        }
+
+        // Step 2: Generate proofs for all leaves
+        println!("\nStep 2: Generating proofs for all leaves");
+        let mut leaf_proofs = Vec::new();
+
+        for (i, leaf_hash) in leaves.iter().enumerate() {
+            println!("  Generating proof for leaf {}: {:?}", i, leaf_hash);
+            match forest.prove(&[*leaf_hash]) {
+                Ok(proof) => {
+                    println!(
+                        "    ✓ Proof generated successfully, targets: {}",
+                        proof.targets.len()
+                    );
+                    println!("    ✓ Proof positions: {:?}", proof.targets);
+                    println!("    ✓ Proof hashes count: {}", proof.hashes.len());
+                    leaf_proofs.push((*leaf_hash, proof));
+                }
+                Err(e) => {
+                    println!("    ✗ Failed to generate proof: {}", e);
+                    panic!("Proof generation failed for leaf {}: {}", i, e);
+                }
+            }
+        }
+
+        // Step 3: Verify all proofs pass
+        println!("\nStep 3: Verifying all proofs pass");
+        for (i, (leaf_hash, proof)) in leaf_proofs.iter().enumerate() {
+            println!("  Verifying proof for leaf {}: {:?}", i, leaf_hash);
+            match forest.verify(proof, &[*leaf_hash]) {
+                Ok(true) => println!("    ✓ Proof verified successfully"),
+                Ok(false) => {
+                    println!("    ✗ Proof verification returned false");
+                    panic!("Proof verification failed for leaf {}", i);
+                }
+                Err(e) => {
+                    println!("    ✗ Proof verification error: {}", e);
+                    panic!("Proof verification error for leaf {}: {}", i, e);
+                }
+            }
+        }
+
+        // Step 4: Delete 2 leaves (first and third)
+        let leaves_to_delete = vec![leaves[0], leaves[2]]; // Delete leaf 0 and leaf 2
+        println!(
+            "\nStep 4: Deleting {} leaves: {:?}",
+            leaves_to_delete.len(),
+            leaves_to_delete
+        );
+
+        match forest.modify(&[], &leaves_to_delete) {
+            Ok(()) => {
+                println!("  ✓ Deletion successful");
+                println!("  Number of leaves after deletion: {}", forest.leaves);
+                println!(
+                    "  Number of roots after deletion: {}",
+                    forest.get_roots().len()
+                );
+                for (i, root) in forest.get_roots().iter().enumerate() {
+                    println!("    Root {}: {:?}", i, root.get_data());
+                }
+            }
+            Err(e) => {
+                println!("  ✗ Deletion failed: {}", e);
+                panic!("Deletion failed: {}", e);
+            }
+        }
+
+        // Step 5: Verify old proofs for deleted leaves fail
+        println!("\nStep 5: Verifying old proofs for deleted leaves fail");
+        for (leaf_hash, proof) in &leaf_proofs {
+            if leaves_to_delete.contains(leaf_hash) {
+                println!("  Checking deleted leaf proof: {:?}", leaf_hash);
+                match forest.verify(proof, &[*leaf_hash]) {
+                    Ok(false) => println!("    ✓ Proof correctly failed for deleted leaf"),
+                    Ok(true) => {
+                        println!("    ✗ Proof incorrectly passed for deleted leaf");
+                        panic!("Proof should have failed for deleted leaf");
+                    }
+                    Err(e) => println!("    ✓ Proof verification error (expected): {}", e),
+                }
+            }
+        }
+
+        // Step 6: Verify old proofs for remaining leaves correctly fail (tree structure changed)
+        println!(
+            "\nStep 6: Verifying old proofs for remaining leaves correctly fail (tree changed)"
+        );
+        for (leaf_hash, proof) in &leaf_proofs {
+            if !leaves_to_delete.contains(leaf_hash) {
+                println!("  Checking remaining leaf old proof: {:?}", leaf_hash);
+                match forest.verify(proof, &[*leaf_hash]) {
+                    Ok(false) => {
+                        println!("    ✓ Old proof correctly failed (tree structure changed)")
+                    }
+                    Ok(true) => {
+                        println!("    ✗ Old proof incorrectly passed after tree change");
+                        panic!("Old proof should fail after deletion changes tree structure");
+                    }
+                    Err(e) => println!("    ✓ Old proof verification error (expected): {}", e),
+                }
+            }
+        }
+
+        // Step 6b: Generate new proofs for remaining leaves and verify they pass
+        println!("\nStep 6b: Generating new proofs for remaining leaves");
+        let remaining_leaves: Vec<BitcoinNodeHash> = leaves
+            .iter()
+            .filter(|&leaf| !leaves_to_delete.contains(leaf))
+            .cloned()
+            .collect();
+
+        for (i, leaf_hash) in remaining_leaves.iter().enumerate() {
+            println!(
+                "  Generating new proof for remaining leaf {}: {:?}",
+                i, leaf_hash
+            );
+            match forest.prove(&[*leaf_hash]) {
+                Ok(proof) => {
+                    println!("    ✓ New proof generated successfully");
+                    println!("    ✓ New proof positions: {:?}", proof.targets);
+                    println!("    ✓ New proof hashes count: {}", proof.hashes.len());
+                    match forest.verify(&proof, &[*leaf_hash]) {
+                        Ok(true) => println!("    ✓ New proof verified successfully"),
+                        Ok(false) => {
+                            println!("    ✗ New proof verification returned false");
+                            panic!("New proof verification failed");
+                        }
+                        Err(e) => {
+                            println!("    ✗ New proof verification error: {}", e);
+                            panic!("New proof verification error: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("    ✗ Failed to generate new proof: {}", e);
+                    panic!("New proof generation failed: {}", e);
+                }
+            }
+        }
+
+        // Step 7: Re-add new leaves
+        let new_leaves = vec![hash_from_u8(50), hash_from_u8(60)];
+        println!(
+            "\nStep 7: Re-adding {} new leaves: {:?}",
+            new_leaves.len(),
+            new_leaves
+        );
+
+        match forest.modify(&new_leaves, &[]) {
+            Ok(()) => {
+                println!("  ✓ Re-addition successful");
+                println!("  Number of leaves after re-addition: {}", forest.leaves);
+                println!(
+                    "  Number of roots after re-addition: {}",
+                    forest.get_roots().len()
+                );
+                for (i, root) in forest.get_roots().iter().enumerate() {
+                    println!("    Root {}: {:?}", i, root.get_data());
+                }
+            }
+            Err(e) => {
+                println!("  ✗ Re-addition failed: {}", e);
+                panic!("Re-addition failed: {}", e);
+            }
+        }
+
+        // Step 8: Verify new proofs pass
+        println!("\nStep 8: Generating and verifying proofs for new leaves");
+        for (i, leaf_hash) in new_leaves.iter().enumerate() {
+            println!("  Generating proof for new leaf {}: {:?}", i, leaf_hash);
+            match forest.prove(&[*leaf_hash]) {
+                Ok(proof) => {
+                    println!("    ✓ Proof generated successfully");
+                    println!("    ✓ Proof positions: {:?}", proof.targets);
+                    println!("    ✓ Proof hashes count: {}", proof.hashes.len());
+                    match forest.verify(&proof, &[*leaf_hash]) {
+                        Ok(true) => println!("    ✓ New proof verified successfully"),
+                        Ok(false) => {
+                            println!("    ✗ New proof verification returned false");
+                            panic!("New proof verification failed");
+                        }
+                        Err(e) => {
+                            println!("    ✗ New proof verification error: {}", e);
+                            panic!("New proof verification error: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("    ✗ Failed to generate proof for new leaf: {}", e);
+                    panic!("Proof generation failed for new leaf: {}", e);
+                }
+            }
+        }
+
+        // Step 9: Final comprehensive test - prove all remaining leaves together
+        let all_remaining_leaves: Vec<BitcoinNodeHash> = leaves
+            .iter()
+            .filter(|&leaf| !leaves_to_delete.contains(leaf))
+            .cloned()
+            .chain(new_leaves.iter().cloned())
+            .collect();
+
+        println!(
+            "\nStep 9: Final test - proving all {} remaining leaves together",
+            all_remaining_leaves.len()
+        );
+        match forest.prove(&all_remaining_leaves) {
+            Ok(proof) => {
+                println!("  ✓ Batch proof generated successfully");
+                println!("  ✓ Batch proof positions: {:?}", proof.targets);
+                println!("  ✓ Batch proof hashes count: {}", proof.hashes.len());
+                match forest.verify(&proof, &all_remaining_leaves) {
+                    Ok(true) => println!("  ✓ Batch proof verified successfully"),
+                    Ok(false) => {
+                        println!("  ✗ Batch proof verification returned false");
+                        panic!("Batch proof verification failed");
+                    }
+                    Err(e) => {
+                        println!("  ✗ Batch proof verification error: {}", e);
+                        panic!("Batch proof verification error: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  ✗ Failed to generate batch proof: {}", e);
+                panic!("Batch proof generation failed: {}", e);
+            }
+        }
+
+        println!("\n=== MemForest Regression Test PASSED ===");
+    }
 }
